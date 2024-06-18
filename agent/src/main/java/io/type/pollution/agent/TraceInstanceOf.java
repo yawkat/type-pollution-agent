@@ -101,6 +101,13 @@ public class TraceInstanceOf {
             LAST_SEEN_INTERFACE_UPDATER.lazySet(this, interfaceClazz);
             if (lastSeen != null) {
                 updateTraceCount(interfaceClazz, trace);
+
+                TypeCheckThrashEvent event = new TypeCheckThrashEvent();
+                if (event.isEnabled()) {
+                    event.concreteClass = clazz.getName();
+                    event.interfaceClass = interfaceClazz.getName();
+                    event.commit();
+                }
             }
         }
     }
@@ -118,7 +125,7 @@ public class TraceInstanceOf {
         private static final AtomicLongFieldUpdater<TraceCounter> SAMPLING_TICK_UPDATER =
                 AtomicLongFieldUpdater.newUpdater(TraceCounter.class, "lastSamplingTick");
 
-        private final Class clazz;
+        final Class clazz;
         private volatile long lastSamplingTick = System.nanoTime();
         private final ConcurrentHashMap<Trace, TraceData> traces = new ConcurrentHashMap<>();
         private static final ThreadLocal<Trace> TRACE = ThreadLocal.withInitial(Trace::new);

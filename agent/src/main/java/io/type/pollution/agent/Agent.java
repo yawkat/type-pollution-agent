@@ -21,6 +21,9 @@ import java.nio.file.StandardOpenOption;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.Collection;
+import java.util.Collections;
+import java.util.HashSet;
+import java.util.Set;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 
@@ -39,6 +42,8 @@ public class Agent {
     private static final int TRACING_DELAY_SECS = Integer.getInteger("io.type.pollution.delay", 0);
     private static final Long REPORT_INTERVAL_SECS = Long.getLong("io.type.pollution.report.interval");
     private static final boolean ENABLE_LAMBDA_INSTRUMENTATION = Boolean.getBoolean("io.type.pollution.lambda");
+
+    private static final Set<String> disabledClassLoaders = Collections.synchronizedSet(new HashSet<>());
 
     public static void premain(String agentArgs, Instrumentation inst) {
         if (ENABLE_FULL_STACK_TRACES) {
@@ -78,31 +83,43 @@ public class Agent {
                             typeDescription,
                             classLoader,
                             module,
-                            protectionDomain) -> builder
-                        .visit(TypeConstantAdjustment.INSTANCE)
-                        .visit(new AsmVisitorWrapper.AbstractBase() {
+                            protectionDomain) -> {
+                    if (classLoader != null) {
+                        // in gradle test runners, there are class loaders that don't include the agent classes
+                        try {
+                            classLoader.loadClass(TraceInstanceOf.class.getName());
+                        } catch (ClassNotFoundException e) {
+                            disabledClassLoaders.add(classLoader.toString());
+                            return builder;
+                        }
+                    }
 
-                            @Override
-                            public int mergeWriter(int flags) {
-                                return flags | ClassWriter.COMPUTE_FRAMES;
-                            }
+                    return builder
+                            .visit(TypeConstantAdjustment.INSTANCE)
+                            .visit(new AsmVisitorWrapper.AbstractBase() {
 
-                            @Override
-                            public int mergeReader(int flags) {
-                                return flags;
-                            }
+                                @Override
+                                public int mergeWriter(int flags) {
+                                    return flags | ClassWriter.COMPUTE_FRAMES;
+                                }
 
-                            @Override
-                            public net.bytebuddy.jar.asm.ClassVisitor wrap(TypeDescription instrumentedType,
-                                                                           net.bytebuddy.jar.asm.ClassVisitor classVisitor,
-                                                                           Implementation.Context implementationContext,
-                                                                           TypePool typePool,
-                                                                           FieldList<FieldDescription.InDefinedShape> fields,
-                                                                           MethodList<?> methods,
-                                                                           int writerFlags, int readerFlags) {
-                                return new ByteBuddyUtils.ByteBuddyTypePollutionClassVisitor(net.bytebuddy.jar.asm.Opcodes.ASM9, classVisitor);
-                            }
-                        })).installOn(inst);
+                                @Override
+                                public int mergeReader(int flags) {
+                                    return flags;
+                                }
+
+                                @Override
+                                public net.bytebuddy.jar.asm.ClassVisitor wrap(TypeDescription instrumentedType,
+                                                                               net.bytebuddy.jar.asm.ClassVisitor classVisitor,
+                                                                               Implementation.Context implementationContext,
+                                                                               TypePool typePool,
+                                                                               FieldList<FieldDescription.InDefinedShape> fields,
+                                                                               MethodList<?> methods,
+                                                                               int writerFlags, int readerFlags) {
+                                    return new ByteBuddyUtils.ByteBuddyTypePollutionClassVisitor(net.bytebuddy.jar.asm.Opcodes.ASM9, classVisitor);
+                                }
+                            });
+                }).installOn(inst);
     }
 
     private static void printFinalReport() {
@@ -125,6 +142,9 @@ public class Agent {
             return "";
         }
         StringBuilder report = new StringBuilder();
+        for (String disabledClassLoader : disabledClassLoaders) {
+            report.append("Classes on this class loader could not be instrumented: ").append(disabledClassLoader).append('\n');
+        }
         int rowId = 0;
         for (TraceInstanceOf.TraceCounter.Snapshot counter : counters) {
             report.append("--------------------------\n");
